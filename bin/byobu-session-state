@@ -24,6 +24,7 @@ Notes:
   - Does not restore running commands or scrollback.
   - Restore uses byobu-tmux when available so Byobu keybindings/status are
     initialized instead of creating a plain tmux session.
+  - Set BYOBU_SESSION_STATE_DIR to override the snapshot directory.
 EOF
 }
 
@@ -32,8 +33,34 @@ fail() {
   exit 1
 }
 
+fail_usage() {
+  printf '%s\n\n' "$*" >&2
+  usage
+  exit 2
+}
+
 ensure_tmux() {
   command -v tmux >/dev/null 2>&1 || fail "tmux is required."
+}
+
+validate_snapshot_name() {
+  local snapshot_name="$1"
+  [ -n "$snapshot_name" ] || fail_usage "snapshot name must not be empty"
+  case "$snapshot_name" in
+    */*|.*/*|..|.)
+      fail_usage "snapshot name must be a simple name, not a path: $snapshot_name"
+      ;;
+  esac
+}
+
+validate_session_name() {
+  local session_name="$1"
+  [ -n "$session_name" ] || fail_usage "session name must not be empty"
+  case "$session_name" in
+    *:*)
+      fail_usage "session names containing ':' are not supported: $session_name"
+      ;;
+  esac
 }
 
 byobu_tmux_cmd() {
@@ -86,9 +113,12 @@ cmd_save() {
   ensure_tmux
   ensure_snapshot_root
 
+  [ "$#" -le 2 ] || fail_usage "save accepts at most 2 arguments"
+
   local snapshot_name="${1:-}"
   local session_name
   session_name=$(resolve_session_name "${2:-}")
+  validate_session_name "$session_name"
 
   if ! tmux has-session -t "$session_name" 2>/dev/null; then
     fail "tmux session not found: $session_name"
@@ -97,6 +127,7 @@ cmd_save() {
   if [ -z "$snapshot_name" ]; then
     snapshot_name="$session_name"
   fi
+  validate_snapshot_name "$snapshot_name"
 
   local snapshot_path
   snapshot_path=$(snapshot_path_for "$snapshot_name")
@@ -198,8 +229,11 @@ restore_window() {
 
 cmd_restore() {
   ensure_tmux
+  [ "$#" -ge 1 ] || fail_usage "restore requires a snapshot name"
+  [ "$#" -le 2 ] || fail_usage "restore accepts at most 2 arguments"
+
   local snapshot_name="${1:-}"
-  [ -n "$snapshot_name" ] || fail "restore requires a snapshot name"
+  validate_snapshot_name "$snapshot_name"
 
   local snapshot_path
   snapshot_path=$(snapshot_path_for "$snapshot_name")
@@ -209,6 +243,7 @@ cmd_restore() {
   source "$snapshot_path"
 
   local target_session="${2:-$session_name}"
+  validate_session_name "$target_session"
   if tmux has-session -t "$target_session" 2>/dev/null; then
     fail "target session already exists: $target_session"
   fi
@@ -224,6 +259,7 @@ cmd_restore() {
 }
 
 cmd_list() {
+  [ "$#" -eq 0 ] || fail_usage "list does not accept arguments"
   ensure_snapshot_root
   if ! compgen -G "$snapshot_root/*.snapshot" >/dev/null; then
     printf 'No snapshots in %s\n' "$snapshot_root"
@@ -254,7 +290,7 @@ main() {
       usage
       ;;
     *)
-      fail "Unknown subcommand: $cmd"
+      fail_usage "Unknown subcommand: $cmd"
       ;;
   esac
 }
