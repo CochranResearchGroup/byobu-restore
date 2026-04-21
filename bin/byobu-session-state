@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+snapshot_root="${BYOBU_SESSION_STATE_DIR:-$HOME/.local/state/byobu-session-state}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  byobu-session-state save [snapshot_name] [session_name]
+  byobu-session-state restore <snapshot_name> [target_session]
+  byobu-session-state list
+
+Examples:
+  byobu-session-state save
+  byobu-session-state save work
+  byobu-session-state save work mysession
+  byobu-session-state restore work
+  byobu-session-state restore work restored-work
+  byobu-session-state list
+
+Notes:
+  - Captures tmux/byobu windows, pane cwd values, pane counts, layouts, and
+    the active window/pane.
+  - Does not restore running commands or scrollback.
+  - Restore uses byobu-tmux when available so Byobu keybindings/status are
+    initialized instead of creating a plain tmux session.
+EOF
+}
+
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+ensure_tmux() {
+  command -v tmux >/dev/null 2>&1 || fail "tmux is required."
+}
+
+byobu_tmux_cmd() {
+  if command -v byobu-tmux >/dev/null 2>&1; then
+    printf '%s\n' "byobu-tmux"
+  else
+    printf '%s\n' "tmux"
+  fi
+}
+
+source_byobu_profile() {
+  command -v byobu-tmux >/dev/null 2>&1 || return 0
+  [ -r /usr/share/byobu/profiles/tmuxrc ] || return 0
+  byobu-tmux source-file /usr/share/byobu/profiles/tmuxrc >/dev/null 2>&1 || true
+}
+
+current_session_name() {
+  tmux display-message -p '#S'
+}
+
+resolve_session_name() {
+  local explicit_session="${1:-}"
+  if [ -n "$explicit_session" ]; then
+    printf '%s\n' "$explicit_session"
+    return 0
+  fi
+  [ -n "${TMUX:-}" ] || fail "No current tmux/byobu session. Pass a session name explicitly."
+  current_session_name
+}
+
+ensure_snapshot_root() {
+  mkdir -p "$snapshot_root"
+}
+
+snapshot_path_for() {
+  local snapshot_name="$1"
+  printf '%s/%s.snapshot\n' "$snapshot_root" "$snapshot_name"
+}
+
+safe_path() {
+  local path="$1"
+  if [ -d "$path" ]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s\n' "$HOME"
+  fi
+}
+
+cmd_save() {
+  ensure_tmux
+  ensure_snapshot_root
+
+  local snapshot_name="${1:-}"
+  local session_name
+  session_name=$(resolve_session_name "${2:-}")
+
+  if ! tmux has-session -t "$session_name" 2>/dev/null; then
+    fail "tmux session not found: $session_name"
+  fi
+
+  if [ -z "$snapshot_name" ]; then
+    snapshot_name="$session_name"
+  fi
+
+  local snapshot_path
+  snapshot_path=$(snapshot_path_for "$snapshot_name")
+  local tmp
+  tmp=$(mktemp)
+  trap 'rm -f "$tmp"' EXIT
+
+  local active_window_index
+  active_window_index=$(tmux display-message -p -t "$session_name" '#I')
+
+  printf 'session_name=%q\n' "$session_name" > "$tmp"
+  printf 'active_window_position=%q\n' "0" >> "$tmp"
+
+  local -a window_indexes=()
+  while IFS= read -r idx; do
+    [ -n "$idx" ] && window_indexes+=("$idx")
+  done < <(tmux list-windows -t "$session_name" -F '#{window_index}')
+
+  printf 'window_count=%q\n' "${#window_indexes[@]}" >> "$tmp"
+
+  local array_index=0
+  local window_index
+  for window_index in "${window_indexes[@]}"; do
+    local target="${session_name}:${window_index}"
+    local window_name window_layout active_pane_index
+    window_name=$(tmux display-message -p -t "$target" '#{window_name}')
+    window_layout=$(tmux display-message -p -t "$target" '#{window_layout}')
+    active_pane_index=$(tmux display-message -p -t "$target" '#{window_active}')
+
+    printf 'window_indexes[%d]=%q\n' "$array_index" "$window_index" >> "$tmp"
+    printf 'window_names[%d]=%q\n' "$array_index" "$window_name" >> "$tmp"
+    printf 'window_layouts[%d]=%q\n' "$array_index" "$window_layout" >> "$tmp"
+    printf 'window_active_panes[%d]=%q\n' "$array_index" "$active_pane_index" >> "$tmp"
+    if [ "$window_index" = "$active_window_index" ]; then
+      printf 'active_window_position=%q\n' "$array_index" >> "$tmp"
+    fi
+
+    local -a pane_indexes=()
+    while IFS= read -r pane_index; do
+      [ -n "$pane_index" ] && pane_indexes+=("$pane_index")
+    done < <(tmux list-panes -t "$target" -F '#{pane_index}')
+
+    printf 'window_pane_counts[%d]=%q\n' "$array_index" "${#pane_indexes[@]}" >> "$tmp"
+    printf 'declare -a window_%d_pane_paths=()\n' "$array_index" >> "$tmp"
+
+    local pane_array_index=0
+    local pane_index
+    for pane_index in "${pane_indexes[@]}"; do
+      local pane_path
+      pane_path=$(tmux display-message -p -t "${target}.${pane_index}" '#{pane_current_path}')
+      printf 'window_%d_pane_paths[%d]=%q\n' "$array_index" "$pane_array_index" "$pane_path" >> "$tmp"
+      pane_array_index=$((pane_array_index + 1))
+    done
+
+    array_index=$((array_index + 1))
+  done
+
+  install -m 0600 "$tmp" "$snapshot_path"
+  rm -f "$tmp"
+  trap - EXIT
+
+  printf 'Saved snapshot %s for tmux session %s at %s\n' "$snapshot_name" "$session_name" "$snapshot_path"
+}
+
+restore_window() {
+  local target_session="$1"
+  local array_index="$2"
+  local window_name="${window_names[$array_index]}"
+  local window_layout="${window_layouts[$array_index]}"
+  local active_pane_index="${window_active_panes[$array_index]}"
+  local pane_count="${window_pane_counts[$array_index]}"
+  local pane_paths_var="window_${array_index}_pane_paths"
+  local -n pane_paths_ref="$pane_paths_var"
+
+  local first_path
+  first_path=$(safe_path "${pane_paths_ref[0]:-$HOME}")
+
+  if [ "$array_index" -eq 0 ]; then
+    local launcher
+    launcher=$(byobu_tmux_cmd)
+    "$launcher" new-session -d -s "$target_session" -n "$window_name" -c "$first_path"
+    source_byobu_profile
+  else
+    tmux new-window -t "$target_session:" -n "$window_name" -c "$first_path"
+  fi
+
+  local target_window="${target_session}:${array_index}"
+  local pane_idx=1
+  while [ "$pane_idx" -lt "$pane_count" ]; do
+    local pane_path
+    pane_path=$(safe_path "${pane_paths_ref[$pane_idx]:-$HOME}")
+    tmux split-window -t "$target_window" -c "$pane_path"
+    pane_idx=$((pane_idx + 1))
+  done
+
+  tmux select-layout -t "$target_window" "$window_layout" >/dev/null 2>&1 || true
+  tmux select-pane -t "${target_window}.${active_pane_index}" >/dev/null 2>&1 || true
+}
+
+cmd_restore() {
+  ensure_tmux
+  local snapshot_name="${1:-}"
+  [ -n "$snapshot_name" ] || fail "restore requires a snapshot name"
+
+  local snapshot_path
+  snapshot_path=$(snapshot_path_for "$snapshot_name")
+  [ -f "$snapshot_path" ] || fail "snapshot not found: $snapshot_path"
+
+  # shellcheck disable=SC1090
+  source "$snapshot_path"
+
+  local target_session="${2:-$session_name}"
+  if tmux has-session -t "$target_session" 2>/dev/null; then
+    fail "target session already exists: $target_session"
+  fi
+
+  local i=0
+  while [ "$i" -lt "$window_count" ]; do
+    restore_window "$target_session" "$i"
+    i=$((i + 1))
+  done
+
+  tmux select-window -t "${target_session}:${active_window_position}" >/dev/null 2>&1 || true
+  printf 'Restored tmux session %s from %s\n' "$target_session" "$snapshot_path"
+}
+
+cmd_list() {
+  ensure_snapshot_root
+  if ! compgen -G "$snapshot_root/*.snapshot" >/dev/null; then
+    printf 'No snapshots in %s\n' "$snapshot_root"
+    return 0
+  fi
+  local snapshot
+  for snapshot in "$snapshot_root"/*.snapshot; do
+    basename "${snapshot%.snapshot}"
+  done
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    save)
+      shift
+      cmd_save "$@"
+      ;;
+    restore)
+      shift
+      cmd_restore "$@"
+      ;;
+    list)
+      shift
+      cmd_list "$@"
+      ;;
+    -h|--help|help|'')
+      usage
+      ;;
+    *)
+      fail "Unknown subcommand: $cmd"
+      ;;
+  esac
+}
+
+main "$@"
