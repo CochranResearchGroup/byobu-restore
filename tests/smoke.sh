@@ -15,12 +15,24 @@ tmux kill-session -t byobu-state-test >/dev/null 2>&1 || true
 tmux kill-session -t byobu-state-restored >/dev/null 2>&1 || true
 
 tmux new-session -d -s byobu-state-test -n editor -c /tmp
-tmux split-window -t byobu-state-test:0 -c /var/tmp
-tmux select-layout -t byobu-state-test:0 even-horizontal >/dev/null 2>&1 || true
+tmux split-window -h -t byobu-state-test:0 -c /var/tmp
+tmux split-window -v -t byobu-state-test:0.1 -c "$HOME"
+tmux select-layout -t byobu-state-test:0 main-vertical >/dev/null 2>&1 || true
+original_geometry=$(tmux list-panes -t byobu-state-test:0 -F '#{pane_index}:#{pane_left},#{pane_top},#{pane_width},#{pane_height}' | paste -sd ';' -)
 tmux new-window -t byobu-state-test: -n home -c "$HOME"
 tmux select-window -t byobu-state-test:1
 
 BYOBU_SESSION_STATE_DIR="$snapshot_dir" "$repo_root/bin/byobu-session-state" save smoke byobu-state-test
+snapshot_path="$snapshot_dir/smoke.snapshot"
+grep -q '^window_pane_counts\[0\]=3$' "$snapshot_path" || {
+  echo "snapshot did not record three panes for the split window" >&2
+  exit 1
+}
+grep -q '^window_layouts\[0\]=' "$snapshot_path" || {
+  echo "snapshot did not record the split window layout" >&2
+  exit 1
+}
+
 tmux kill-session -t byobu-state-test
 BYOBU_SESSION_STATE_DIR="$snapshot_dir" "$repo_root/bin/byobu-session-state" restore smoke byobu-state-restored
 
@@ -31,8 +43,22 @@ windows=$(tmux list-windows -t byobu-state-restored -F '#{window_index}:#{window
 }
 
 pane_paths=$(tmux list-panes -t byobu-state-restored:0 -F '#{pane_current_path}' | paste -sd ',' -)
-[ "$pane_paths" = "/tmp,/var/tmp" ] || {
+[ "$pane_paths" = "/tmp,/var/tmp,$HOME" ] || {
   echo "unexpected pane paths: $pane_paths" >&2
+  exit 1
+}
+
+restored_pane_count=$(tmux list-panes -t byobu-state-restored:0 -F '#{pane_index}' | wc -l)
+[ "$restored_pane_count" = "3" ] || {
+  echo "unexpected restored pane count: $restored_pane_count" >&2
+  exit 1
+}
+
+restored_geometry=$(tmux list-panes -t byobu-state-restored:0 -F '#{pane_index}:#{pane_left},#{pane_top},#{pane_width},#{pane_height}' | paste -sd ';' -)
+[ "$restored_geometry" = "$original_geometry" ] || {
+  echo "restored split geometry does not match original" >&2
+  echo "original: $original_geometry" >&2
+  echo "restored: $restored_geometry" >&2
   exit 1
 }
 

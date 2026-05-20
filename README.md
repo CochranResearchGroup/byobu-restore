@@ -6,7 +6,7 @@ backend.
 It captures:
 - tmux/Byobu windows
 - pane counts
-- pane layouts
+- pane layouts, which preserve split orientation and sizing
 - pane current working directories
 - active window and active panes
 
