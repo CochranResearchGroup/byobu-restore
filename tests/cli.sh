@@ -22,6 +22,12 @@ if run_cli save bad/name byobu-state-cli >/tmp/byobu-state-cli.out 2>/tmp/byobu-
 fi
 grep -q 'snapshot name must be a simple name' /tmp/byobu-state-cli.err
 
+if run_cli restore --unknown cli >/tmp/byobu-state-cli.out 2>/tmp/byobu-state-cli.err; then
+  echo "expected unknown restore option to fail" >&2
+  exit 1
+fi
+grep -q 'unknown restore option' /tmp/byobu-state-cli.err
+
 tmux new-session -d -s byobu-state-cli -n cli -c /tmp
 run_cli save cli byobu-state-cli >/tmp/byobu-state-cli.out
 snapshot_path="$snapshot_dir/cli.snapshot"

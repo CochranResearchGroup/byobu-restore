@@ -7,17 +7,20 @@ snapshot_dir=$(mktemp -d)
 cleanup() {
   tmux kill-session -t byobu-state-test >/dev/null 2>&1 || true
   tmux kill-session -t byobu-state-restored >/dev/null 2>&1 || true
+  tmux kill-session -t byobu-state-restarted >/dev/null 2>&1 || true
   rm -rf "$snapshot_dir"
 }
 trap cleanup EXIT
 
 tmux kill-session -t byobu-state-test >/dev/null 2>&1 || true
 tmux kill-session -t byobu-state-restored >/dev/null 2>&1 || true
+tmux kill-session -t byobu-state-restarted >/dev/null 2>&1 || true
 
 tmux new-session -d -s byobu-state-test -n editor -c /tmp
 tmux split-window -h -t byobu-state-test:0 -c /var/tmp
-tmux split-window -v -t byobu-state-test:0.1 -c "$HOME"
-tmux select-layout -t byobu-state-test:0 main-vertical >/dev/null 2>&1 || true
+tmux split-window -v -t byobu-state-test:0.1 -c "$HOME" 'sleep 900'
+tmux select-layout -t byobu-state-test:0 tiled >/dev/null 2>&1 || true
+sleep 0.2
 original_geometry=$(tmux list-panes -t byobu-state-test:0 -F '#{pane_index}:#{pane_left},#{pane_top},#{pane_width},#{pane_height}' | paste -sd ';' -)
 tmux new-window -t byobu-state-test: -n home -c "$HOME"
 tmux select-window -t byobu-state-test:1
@@ -30,6 +33,10 @@ grep -q '^window_pane_counts\[0\]=3$' "$snapshot_path" || {
 }
 grep -q '^window_layouts\[0\]=' "$snapshot_path" || {
   echo "snapshot did not record the split window layout" >&2
+  exit 1
+}
+grep -q '^window_0_pane_restart_commands\[2\]=sleep\\ 900$' "$snapshot_path" || {
+  echo "snapshot did not record the running pane command" >&2
   exit 1
 }
 
@@ -61,6 +68,25 @@ restored_geometry=$(tmux list-panes -t byobu-state-restored:0 -F '#{pane_index}:
   echo "restored: $restored_geometry" >&2
   exit 1
 }
+
+default_commands=$(tmux list-panes -t byobu-state-restored:0 -F '#{pane_current_command}' | paste -sd ',' -)
+case "$default_commands" in
+  *sleep*)
+    echo "restore restarted a process without opt-in: $default_commands" >&2
+    exit 1
+    ;;
+esac
+
+BYOBU_SESSION_STATE_DIR="$snapshot_dir" "$repo_root/bin/byobu-session-state" restore --restart-processes smoke byobu-state-restarted
+sleep 1
+restart_commands=$(tmux list-panes -t byobu-state-restarted:0 -F '#{pane_current_command}' | paste -sd ',' -)
+case "$restart_commands" in
+  *sleep*) ;;
+  *)
+    echo "restore --restart-processes did not restart the saved command: $restart_commands" >&2
+    exit 1
+    ;;
+esac
 
 if command -v byobu-tmux >/dev/null 2>&1; then
   status_left=$(tmux show-options -gqv status-left)

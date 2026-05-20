@@ -9,6 +9,7 @@ It captures:
 - pane layouts, which preserve split orientation and sizing
 - pane current working directories
 - active window and active panes
+- foreground pane command lines, when detectable
 
 It does not capture:
 - running processes
@@ -17,6 +18,8 @@ It does not capture:
 
 Restore uses `byobu-tmux` when available so restored sessions are initialized
 with Byobu keybindings and status configuration rather than plain tmux defaults.
+By default, restore opens fresh shells. Restarting saved pane commands is
+available as an explicit opt-in.
 
 ## Install
 
@@ -67,6 +70,18 @@ Restore a snapshot:
 byobu-session-state restore work
 ```
 
+Restore a snapshot and restart detected foreground pane commands:
+
+```bash
+byobu-session-state restore --restart-processes work
+```
+
+You can also opt in with an environment variable:
+
+```bash
+BYOBU_SESSION_RESTART_PROCESSES=1 byobu-session-state restore work
+```
+
 Restore under a different target session name:
 
 ```bash
@@ -94,19 +109,30 @@ BYOBU_SESSION_STATE_DIR=/path/to/snapshots byobu-session-state save work
 ## Limitations
 
 This tool restores a session shape, not a live process tree. Restored panes open
-fresh shells in the saved working directories. It does not restore running
-programs, shell variables, scrollback, command output, or unsaved editor state.
+fresh shells in the saved working directories unless `--restart-processes` is
+used. It does not restore shell variables, scrollback, command output, or
+unsaved editor state.
 
 Pane layouts are captured with tmux's `window_layout` value. The smoke test
 verifies split orientation, sizing, and pane paths on current tmux/Byobu, but
 small differences can still occur across tmux versions or very different
 terminal sizes.
 
+Process restart is best-effort. The tool saves the deepest detectable child
+process command line for each pane, or the pane process command line when tmux
+started the pane with a direct command. That works for simple foreground
+commands such as `vim file.txt` or `npm run dev`, but it may miss commands
+launched through wrappers, nested shells, job control, or process supervisors.
+
 ## Snapshot Safety
 
 Snapshot files are shell files that `restore` sources. Only restore snapshots
 you created or reviewed. The tool writes snapshots with mode `0600` and refuses
 to restore group- or world-writable snapshots.
+
+`--restart-processes` sends saved command lines into restored panes as keyboard
+input. Review a snapshot before using it if there is any chance it was edited or
+came from another machine.
 
 ## Uninstall
 

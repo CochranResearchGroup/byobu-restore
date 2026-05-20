@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="0.1.0"
+version="0.2.0"
 snapshot_root="${BYOBU_SESSION_STATE_DIR:-$HOME/.local/state/byobu-session-state}"
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
   byobu-session-state save [snapshot_name] [session_name]
-  byobu-session-state restore <snapshot_name> [target_session]
+  byobu-session-state restore [--restart-processes] <snapshot_name> [target_session]
   byobu-session-state list
   byobu-session-state --version
 
@@ -17,13 +17,17 @@ Examples:
   byobu-session-state save work
   byobu-session-state save work mysession
   byobu-session-state restore work
+  byobu-session-state restore --restart-processes work
   byobu-session-state restore work restored-work
   byobu-session-state list
 
 Notes:
   - Captures tmux/byobu windows, pane cwd values, pane counts, layouts, and
     the active window/pane.
-  - Does not restore running commands or scrollback.
+  - Captures foreground pane command lines when detectable.
+  - Does not restore running commands by default. Use --restart-processes to
+    send captured command lines into restored panes.
+  - Does not restore scrollback.
   - Restore uses byobu-tmux when available so Byobu keybindings/status are
     initialized instead of creating a plain tmux session.
   - Set BYOBU_SESSION_STATE_DIR to override the snapshot directory.
@@ -102,6 +106,17 @@ snapshot_path_for() {
   printf '%s/%s.snapshot\n' "$snapshot_root" "$snapshot_name"
 }
 
+truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 validate_snapshot_file_trust() {
   local snapshot_path="$1"
   [ -O "$snapshot_path" ] || fail "refusing to restore snapshot not owned by the current user: $snapshot_path"
@@ -115,6 +130,33 @@ validate_snapshot_file_trust() {
   if [ $((group_mode & 2)) -ne 0 ] || [ $((other_mode & 2)) -ne 0 ]; then
     fail "refusing to restore group/world-writable snapshot: $snapshot_path"
   fi
+}
+
+pane_restart_command() {
+  local pane_target="$1"
+  local pane_pid pane_command command_pid child_pid command_name
+  pane_pid=$(tmux display-message -p -t "$pane_target" '#{pane_pid}' 2>/dev/null || true)
+  [ -n "$pane_pid" ] || return 0
+
+  command_pid="$pane_pid"
+  while child_pid=$(ps --ppid "$command_pid" -o pid= 2>/dev/null | awk 'NF {pid=$1} END {print pid}'); [ -n "$child_pid" ]; do
+    command_pid="$child_pid"
+  done
+
+  command_name=$(ps -o comm= -p "$command_pid" 2>/dev/null | sed -n '1p')
+  case "$command_name" in
+    bash|dash|fish|ksh|mksh|sh|zsh|-bash|-dash|-fish|-ksh|-mksh|-sh|-zsh)
+      pane_command=$(tmux display-message -p -t "$pane_target" '#{pane_current_command}' 2>/dev/null || true)
+      case "$pane_command" in
+        bash|dash|fish|ksh|mksh|sh|zsh|-bash|-dash|-fish|-ksh|-mksh|-sh|-zsh|'')
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+
+  ps -o args= -p "$command_pid" 2>/dev/null | sed -n '1p' || true
+  return 0
 }
 
 safe_path() {
@@ -154,7 +196,7 @@ cmd_save() {
   snapshot_path=$(snapshot_path_for "$snapshot_name")
   local tmp
   tmp=$(mktemp)
-  trap 'rm -f "$tmp"' EXIT
+  trap 'rm -f "${tmp:-}"' EXIT
 
   local active_window_index
   active_window_index=$(tmux display-message -p -t "$session_name" '#I')
@@ -193,13 +235,17 @@ cmd_save() {
 
     printf 'window_pane_counts[%d]=%q\n' "$array_index" "${#pane_indexes[@]}" >> "$tmp"
     printf 'declare -a window_%d_pane_paths=()\n' "$array_index" >> "$tmp"
+    printf 'declare -a window_%d_pane_restart_commands=()\n' "$array_index" >> "$tmp"
 
     local pane_array_index=0
     local pane_index
     for pane_index in "${pane_indexes[@]}"; do
-      local pane_path
+      local pane_path restart_command pane_target
+      pane_target="${target}.${pane_index}"
       pane_path=$(tmux display-message -p -t "${target}.${pane_index}" '#{pane_current_path}')
+      restart_command=$(pane_restart_command "$pane_target")
       printf 'window_%d_pane_paths[%d]=%q\n' "$array_index" "$pane_array_index" "$pane_path" >> "$tmp"
+      printf 'window_%d_pane_restart_commands[%d]=%q\n' "$array_index" "$pane_array_index" "$restart_command" >> "$tmp"
       pane_array_index=$((pane_array_index + 1))
     done
 
@@ -216,12 +262,15 @@ cmd_save() {
 restore_window() {
   local target_session="$1"
   local array_index="$2"
+  local restart_processes="$3"
   local window_name="${window_names[$array_index]}"
   local window_layout="${window_layouts[$array_index]}"
   local active_pane_index="${window_active_panes[$array_index]}"
   local pane_count="${window_pane_counts[$array_index]}"
   local pane_paths_var="window_${array_index}_pane_paths"
+  local pane_commands_var="window_${array_index}_pane_restart_commands"
   local -n pane_paths_ref="$pane_paths_var"
+  local -n pane_commands_ref="$pane_commands_var"
 
   local first_path
   first_path=$(safe_path "${pane_paths_ref[0]:-$HOME}")
@@ -245,11 +294,57 @@ restore_window() {
   done
 
   tmux select-layout -t "$target_window" "$window_layout" >/dev/null 2>&1 || true
+
+  if [ "$restart_processes" = "1" ]; then
+    local restart_pane_idx=0
+    while [ "$restart_pane_idx" -lt "$pane_count" ]; do
+      local restart_command="${pane_commands_ref[$restart_pane_idx]:-}"
+      if [ -n "$restart_command" ]; then
+        tmux send-keys -t "${target_window}.${restart_pane_idx}" "$restart_command" Enter
+      fi
+      restart_pane_idx=$((restart_pane_idx + 1))
+    done
+  fi
+
   tmux select-pane -t "${target_window}.${active_pane_index}" >/dev/null 2>&1 || true
 }
 
 cmd_restore() {
   ensure_tmux
+  local restart_processes=0
+  if truthy "${BYOBU_SESSION_RESTART_PROCESSES:-0}"; then
+    restart_processes=1
+  fi
+
+  local -a args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --restart-processes)
+        restart_processes=1
+        shift
+        ;;
+      --no-restart-processes)
+        restart_processes=0
+        shift
+        ;;
+      --)
+        shift
+        while [ "$#" -gt 0 ]; do
+          args+=("$1")
+          shift
+        done
+        ;;
+      --*)
+        fail_usage "unknown restore option: $1"
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  set -- "${args[@]}"
+
   [ "$#" -ge 1 ] || fail_usage "restore requires a snapshot name"
   [ "$#" -le 2 ] || fail_usage "restore accepts at most 2 arguments"
 
@@ -272,7 +367,7 @@ cmd_restore() {
 
   local i=0
   while [ "$i" -lt "$window_count" ]; do
-    restore_window "$target_session" "$i"
+    restore_window "$target_session" "$i" "$restart_processes"
     i=$((i + 1))
   done
 
