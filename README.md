@@ -21,6 +21,8 @@ with Byobu keybindings and status configuration rather than plain tmux defaults.
 ## Install
 
 ```bash
+git clone https://github.com/CochranResearchGroup/byobu-session-state.git
+cd byobu-session-state
 ./install.sh
 ```
 
@@ -34,6 +36,12 @@ This installs:
 Make sure `~/.local/bin` is on your `PATH`.
 
 ## Usage
+
+Check the installed version:
+
+```bash
+byobu-session-state --version
+```
 
 Save the current attached Byobu/tmux session:
 
@@ -83,6 +91,23 @@ Override that location with:
 BYOBU_SESSION_STATE_DIR=/path/to/snapshots byobu-session-state save work
 ```
 
+## Limitations
+
+This tool restores a session shape, not a live process tree. Restored panes open
+fresh shells in the saved working directories. It does not restore running
+programs, shell variables, scrollback, command output, or unsaved editor state.
+
+Pane layouts are captured with tmux's `window_layout` value. The smoke test
+verifies split orientation, sizing, and pane paths on current tmux/Byobu, but
+small differences can still occur across tmux versions or very different
+terminal sizes.
+
+## Snapshot Safety
+
+Snapshot files are shell files that `restore` sources. Only restore snapshots
+you created or reviewed. The tool writes snapshots with mode `0600` and refuses
+to restore group- or world-writable snapshots.
+
 ## Uninstall
 
 ```bash
@@ -106,3 +131,13 @@ On Ubuntu:
 ```bash
 sudo apt-get install -y byobu tmux
 ```
+
+## Development
+
+Run the local checks:
+
+```bash
+make test
+```
+
+The test suite creates temporary tmux sessions and removes them when it exits.

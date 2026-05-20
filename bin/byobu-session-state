@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+version="0.1.0"
 snapshot_root="${BYOBU_SESSION_STATE_DIR:-$HOME/.local/state/byobu-session-state}"
 
 usage() {
@@ -9,6 +10,7 @@ Usage:
   byobu-session-state save [snapshot_name] [session_name]
   byobu-session-state restore <snapshot_name> [target_session]
   byobu-session-state list
+  byobu-session-state --version
 
 Examples:
   byobu-session-state save
@@ -100,6 +102,21 @@ snapshot_path_for() {
   printf '%s/%s.snapshot\n' "$snapshot_root" "$snapshot_name"
 }
 
+validate_snapshot_file_trust() {
+  local snapshot_path="$1"
+  [ -O "$snapshot_path" ] || fail "refusing to restore snapshot not owned by the current user: $snapshot_path"
+
+  local mode
+  mode=$(stat -c '%a' "$snapshot_path" 2>/dev/null || printf '')
+  [ -n "$mode" ] || return 0
+
+  local group_mode="${mode: -2:1}"
+  local other_mode="${mode: -1}"
+  if [ $((group_mode & 2)) -ne 0 ] || [ $((other_mode & 2)) -ne 0 ]; then
+    fail "refusing to restore group/world-writable snapshot: $snapshot_path"
+  fi
+}
+
 safe_path() {
   local path="$1"
   if [ -d "$path" ]; then
@@ -116,6 +133,10 @@ cmd_save() {
   [ "$#" -le 2 ] || fail_usage "save accepts at most 2 arguments"
 
   local snapshot_name="${1:-}"
+  if [ -n "$snapshot_name" ]; then
+    validate_snapshot_name "$snapshot_name"
+  fi
+
   local session_name
   session_name=$(resolve_session_name "${2:-}")
   validate_session_name "$session_name"
@@ -126,8 +147,8 @@ cmd_save() {
 
   if [ -z "$snapshot_name" ]; then
     snapshot_name="$session_name"
+    validate_snapshot_name "$snapshot_name"
   fi
-  validate_snapshot_name "$snapshot_name"
 
   local snapshot_path
   snapshot_path=$(snapshot_path_for "$snapshot_name")
@@ -238,6 +259,7 @@ cmd_restore() {
   local snapshot_path
   snapshot_path=$(snapshot_path_for "$snapshot_name")
   [ -f "$snapshot_path" ] || fail "snapshot not found: $snapshot_path"
+  validate_snapshot_file_trust "$snapshot_path"
 
   # shellcheck disable=SC1090
   source "$snapshot_path"
@@ -285,6 +307,9 @@ main() {
     list)
       shift
       cmd_list "$@"
+      ;;
+    --version|version)
+      printf 'byobu-session-state %s\n' "$version"
       ;;
     -h|--help|help|'')
       usage
