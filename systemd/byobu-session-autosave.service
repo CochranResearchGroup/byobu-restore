@@ -1,0 +1,11 @@
+[Unit]
+Description=Save Byobu/tmux session layouts and working directories
+Documentation=https://github.com/CochranResearchGroup/byobu-restore
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash %h/.local/lib/byobu-restore/libexec/byobu-session-autosave
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+UMask=0077
+TimeoutStartSec=90
+Nice=10

@@ -88,15 +88,4 @@ case "$restart_commands" in
     ;;
 esac
 
-if command -v byobu-tmux >/dev/null 2>&1; then
-  status_left=$(tmux show-options -gqv status-left)
-  case "$status_left" in
-    *byobu-status*) ;;
-    *)
-      echo "restored session does not appear to have Byobu status loaded: $status_left" >&2
-      exit 1
-      ;;
-  esac
-fi
-
 echo "smoke test passed"

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Snapshot arrays are populated by sourcing the selected data file.
+# shellcheck disable=SC2154,SC2129
 set -euo pipefail
 
 version="0.2.0"
@@ -53,7 +55,7 @@ validate_snapshot_name() {
   local snapshot_name="$1"
   [ -n "$snapshot_name" ] || fail_usage "snapshot name must not be empty"
   case "$snapshot_name" in
-    */*|.*/*|..|.)
+    */*|..|.)
       fail_usage "snapshot name must be a simple name, not a path: $snapshot_name"
       ;;
   esac
@@ -243,7 +245,10 @@ cmd_save() {
       local pane_path restart_command pane_target
       pane_target="${target}.${pane_index}"
       pane_path=$(tmux display-message -p -t "${target}.${pane_index}" '#{pane_current_path}')
-      restart_command=$(pane_restart_command "$pane_target")
+      restart_command=''
+      if truthy "${BYOBU_SESSION_CAPTURE_PROCESSES:-1}"; then
+        restart_command=$(pane_restart_command "$pane_target")
+      fi
       printf 'window_%d_pane_paths[%d]=%q\n' "$array_index" "$pane_array_index" "$pane_path" >> "$tmp"
       printf 'window_%d_pane_restart_commands[%d]=%q\n' "$array_index" "$pane_array_index" "$restart_command" >> "$tmp"
       pane_array_index=$((pane_array_index + 1))

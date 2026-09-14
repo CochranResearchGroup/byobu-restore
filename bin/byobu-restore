@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="1.0.0"
+state_root="${BYOBU_SESSION_STATE_DIR:-$HOME/.local/state/byobu-session-state}"
+state_root="${state_root%/}"
+case "$state_root" in
+  */autosave/latest|*/autosave/previous-boot|*/autosave/????????T??????.?????????Z)
+    state_root="${state_root%/autosave/*}"
+    ;;
+esac
+snapshot_root="$state_root/autosave"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+helper="${BYOBU_SESSION_STATE_HELPER:-$script_dir/byobu-session-state}"
+
+usage() {
+  cat <<'EOF'
+Usage: byobu-restore [latest|previous-boot|TIMESTAMP] [SESSION-SNAPSHOT]
+
+Attach to the shared recovery session. If it does not exist, restore the saved
+session with the most windows, or SESSION-SNAPSHOT when explicitly supplied.
+
+Environment:
+  BYOBU_RESTORE_SESSION       Override the shared target session for this run
+  BYOBU_SESSION_STATE_DIR     Override the state directory
+  BYOBU_SESSION_STATE_HELPER  Override the snapshot helper executable
+EOF
+}
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+  --version|version) printf 'byobu-restore %s\n' "$version"; exit 0 ;;
+esac
+[ "$#" -le 2 ] || { usage >&2; exit 2; }
+
+for command_name in tmux byobu flock; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    printf 'Missing required command: %s\n' "$command_name" >&2
+    exit 1
+  }
+done
+[ -x "$helper" ] || { printf 'Snapshot helper is not executable: %s\n' "$helper" >&2; exit 1; }
+
+chosen="${1:-latest}"
+case "$chosen" in */*|..|.) printf 'Use a snapshot name, not a path.\n' >&2; exit 2 ;; esac
+snapshot="${2:-}"
+case "$snapshot" in */*|..|.) printf 'Use a session snapshot name, not a path.\n' >&2; exit 2 ;; esac
+
+umask 077
+mkdir -p "$state_root"
+exec 8>"$state_root/.restore.lock"
+flock -x 8
+
+target="${BYOBU_RESTORE_SESSION:-}"
+if [ -z "$target" ] && [ -f "$state_root/shared-session" ]; then
+  IFS= read -r target < "$state_root/shared-session" || true
+fi
+target="${target:-recovered-work}"
+case "$target" in *:*|*.*|*/*|*$'\n'*)
+  printf 'Shared session name must not contain colon, dot, slash, or newline.\n' >&2
+  exit 2
+  ;;
+esac
+
+if ! tmux has-session -t "=$target" 2>/dev/null; then
+  snapshot_dir="$snapshot_root/$chosen"
+  [ -d "$snapshot_root" ] || { printf 'No automatic snapshot available: %s\n' "$chosen" >&2; exit 1; }
+  exec 9>"$snapshot_root/.lock"
+  flock -s 9
+  [ -d "$snapshot_dir" ] || { printf 'No automatic snapshot available: %s\n' "$chosen" >&2; exit 1; }
+
+  if [ -z "$snapshot" ]; then
+    largest=-1
+    for candidate in "$snapshot_dir"/*.snapshot; do
+      [ -f "$candidate" ] || continue
+      count=$(sed -n 's/^window_count=\([0-9][0-9]*\)$/\1/p' "$candidate")
+      if [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt "$largest" ]; then
+        largest="$count"
+        snapshot=$(basename "$candidate" .snapshot)
+      fi
+    done
+  fi
+  [ -n "$snapshot" ] || { printf 'No saved sessions found.\n' >&2; exit 1; }
+  BYOBU_SESSION_STATE_DIR="$snapshot_dir" "$helper" restore "$snapshot" "$target"
+  flock -u 9
+  exec 9>&-
+fi
+
+if [ -z "${BYOBU_RESTORE_SESSION:-}" ]; then
+  printf '%s\n' "$target" > "$state_root/shared-session"
+fi
+flock -u 8
+exec 8>&-
+
+if [ -n "${TMUX:-}" ]; then
+  exec tmux switch-client -t "=$target"
+else
+  exec byobu attach-session -t "=$target"
+fi

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+state_root="${BYOBU_SESSION_STATE_DIR:-$HOME/.local/state/byobu-session-state}"
+snapshot_root="$state_root/autosave"
+helper="${BYOBU_SESSION_STATE_HELPER:-$HOME/.local/lib/byobu-restore/bin/byobu-session-state}"
+mkdir -p "$snapshot_root"
+exec 9>"$snapshot_root/.lock"
+flock -n 9 || exit 0
+
+unset TMUX TMUX_PANE
+if ! sessions=$(tmux list-sessions -F '#{session_id}' 2>/dev/null); then
+  printf 'No tmux server; previous snapshots retained.\n'
+  exit 0
+fi
+[ -n "$sessions" ] || exit 0
+[ -x "$helper" ] || { printf 'Snapshot helper is not executable: %s\n' "$helper" >&2; exit 1; }
+
+staging=$(mktemp -d "$snapshot_root/.pending.XXXXXX")
+cleanup() { rm -rf -- "$staging"; }
+trap cleanup EXIT
+
+while IFS= read -r session_id; do
+  session_name=$(tmux display-message -p -t "$session_id" '#{session_name}')
+  BYOBU_SESSION_CAPTURE_PROCESSES=0 BYOBU_SESSION_STATE_DIR="$staging" \
+    "$helper" save "session-${session_id#\$}" "$session_name" >/dev/null
+done <<< "$sessions"
+
+cat /proc/sys/kernel/random/boot_id > "$staging/boot-id"
+if [ -d "$snapshot_root/latest" ]; then
+  if diff -qr "$staging/" "$snapshot_root/latest/" >/dev/null; then
+    printf 'Session state unchanged; previous snapshot retained.\n'
+    exit 0
+  else
+    comparison_status=$?
+    [ "$comparison_status" -eq 1 ] || exit "$comparison_status"
+  fi
+fi
+
+stamp=$(date -u +%Y%m%dT%H%M%S.%NZ)
+if [ -f "$snapshot_root/latest/boot-id" ] && ! cmp -s "$staging/boot-id" "$snapshot_root/latest/boot-id"; then
+  ln -s "$(readlink "$snapshot_root/latest")" "$snapshot_root/.previous-boot-$$"
+  mv -Tf "$snapshot_root/.previous-boot-$$" "$snapshot_root/previous-boot"
+fi
+mv "$staging" "$snapshot_root/$stamp"
+ln -s "$stamp" "$snapshot_root/.latest-$$"
+mv -Tf "$snapshot_root/.latest-$$" "$snapshot_root/latest"
+
+previous_boot=$(readlink "$snapshot_root/previous-boot" 2>/dev/null || true)
+keep_count=0
+[ -n "$previous_boot" ] && [ -d "$snapshot_root/$previous_boot" ] && keep_count=1
+while IFS= read -r saved; do
+  [ "$saved" = "$previous_boot" ] && continue
+  keep_count=$((keep_count + 1))
+  if [ "$keep_count" -gt 12 ]; then
+    rm -rf -- "${snapshot_root:?}/${saved:?}"
+  fi
+done < <(find "$snapshot_root" -mindepth 1 -maxdepth 1 -type d -name '????????T??????.?????????Z' -printf '%f\n' | sort -r)
+
+printf 'Published automatic snapshot: %s/%s\n' "$snapshot_root" "$stamp"

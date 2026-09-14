@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  attach-session|switch-client)
+    printf '%s\n' "$*" >> "$TEST_ATTACH_LOG"
+    exit 0
+    ;;
+  source-file)
+    exit 0
+    ;;
+esac
+exec "$TEST_REAL_TMUX" -S "$TEST_TMUX_SOCKET" -f /dev/null "$@"
