@@ -24,7 +24,8 @@ export TEST_TMUX_SOCKET="$socket"
 export TEST_ATTACH_LOG="$test_root/attached"
 export BYOBU_SESSION_STATE_DIR="$test_root/state"
 export BYOBU_SESSION_STATE_HELPER="$repo_root/bin/byobu-session-state"
-unset TMUX TMUX_PANE BYOBU_RESTORE_SESSION
+unset TMUX TMUX_PANE
+export BYOBU_RESTORE_SESSION=recovered-work
 
 if "$repo_root/bin/byobu-restore" >/dev/null 2>&1; then
   printf 'restore should fail when no snapshot exists\n' >&2
@@ -35,11 +36,12 @@ fi
 "$repo_root/libexec/byobu-session-autosave" >/dev/null
 "$real_tmux" -S "$socket" new-window -t source: -n second 'sleep 120'
 "$repo_root/libexec/byobu-session-autosave" >/dev/null
+# Explicit snapshot selection preserves legacy migration into a new name.
 "$real_tmux" -S "$socket" kill-session -t source
 
 workers=()
 for _ in 1 2 3; do
-  "$repo_root/bin/byobu-restore" >/dev/null &
+  "$repo_root/bin/byobu-restore" latest session-0 >/dev/null &
   workers+=("$!")
 done
 for worker in "${workers[@]}"; do
@@ -57,4 +59,19 @@ grep -q '^attach-session -t =recovered-work$' "$TEST_ATTACH_LOG"
 rm -rf -- "$BYOBU_SESSION_STATE_DIR/autosave"
 "$repo_root/bin/byobu-restore" previous-boot >/dev/null
 
+# A small default must win over a larger bot session.
+unset BYOBU_RESTORE_SESSION
+"$real_tmux" -S "$socket" new-session -d -s default -n development 'sleep 120'
+"$real_tmux" -S "$socket" new-session -d -s codex-bots -n bot-one 'sleep 120'
+"$real_tmux" -S "$socket" new-window -t codex-bots: -n bot-two 'sleep 120'
+"$repo_root/libexec/byobu-session-autosave" >/dev/null
+"$real_tmux" -S "$socket" kill-session -t default
+"$repo_root/bin/byobu-restore" >/dev/null
+[ "$("$real_tmux" -S "$socket" list-windows -t '=default' -F '#W')" = development ]
+"$repo_root/bin/byobu-restore" >/dev/null
+[ "$("$real_tmux" -S "$socket" list-windows -t '=codex-bots' -F '#W' | wc -l)" -eq 2 ]
+if BYOBU_RESTORE_SESSION=missing "$repo_root/bin/byobu-restore" >/dev/null 2>&1; then
+  printf 'missing named snapshot should fail rather than restore bots\n' >&2
+  exit 1
+fi
 printf 'restore test passed\n'

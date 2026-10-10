@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="1.0.0"
+version="1.1.0"
 state_root="${BYOBU_SESSION_STATE_DIR:-$HOME/.local/state/byobu-session-state}"
 state_root="${state_root%/}"
 case "$state_root" in
@@ -18,7 +18,8 @@ usage() {
 Usage: byobu-restore [latest|previous-boot|TIMESTAMP] [SESSION-SNAPSHOT]
 
 Attach to the shared recovery session. If it does not exist, restore the saved
-session with the most windows, or SESSION-SNAPSHOT when explicitly supplied.
+session matching its name, or SESSION-SNAPSHOT when explicitly supplied.
+The target defaults to default; missing named snapshots fail without guessing.
 
 Environment:
   BYOBU_RESTORE_SESSION       Override the shared target session for this run
@@ -55,7 +56,7 @@ target="${BYOBU_RESTORE_SESSION:-}"
 if [ -z "$target" ] && [ -f "$state_root/shared-session" ]; then
   IFS= read -r target < "$state_root/shared-session" || true
 fi
-target="${target:-recovered-work}"
+target="${target:-default}"
 case "$target" in *:*|*.*|*/*|*$'\n'*)
   printf 'Shared session name must not contain colon, dot, slash, or newline.\n' >&2
   exit 2
@@ -70,15 +71,23 @@ if ! tmux has-session -t "=$target" 2>/dev/null; then
   [ -d "$snapshot_dir" ] || { printf 'No automatic snapshot available: %s\n' "$chosen" >&2; exit 1; }
 
   if [ -z "$snapshot" ]; then
-    largest=-1
+    expected_name=$(printf 'session_name=%q' "$target")
     for candidate in "$snapshot_dir"/*.snapshot; do
       [ -f "$candidate" ] || continue
-      count=$(sed -n 's/^window_count=\([0-9][0-9]*\)$/\1/p' "$candidate")
-      if [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt "$largest" ]; then
-        largest="$count"
+      # Compare canonical saved data without evaluating the snapshot as shell.
+      saved_name=$(sed -n '/^session_name=/p' "$candidate")
+      if [ "$saved_name" = "$expected_name" ]; then
+        [ -z "$snapshot" ] || {
+          printf 'Multiple snapshots match session %s; specify SESSION-SNAPSHOT.\n' "$target" >&2
+          exit 1
+        }
         snapshot=$(basename "$candidate" .snapshot)
       fi
     done
+    [ -n "$snapshot" ] || {
+      printf 'No saved snapshot for session %s; specify SESSION-SNAPSHOT for migration.\n' "$target" >&2
+      exit 1
+    }
   fi
   [ -n "$snapshot" ] || { printf 'No saved sessions found.\n' >&2; exit 1; }
   BYOBU_SESSION_STATE_DIR="$snapshot_dir" "$helper" restore "$snapshot" "$target"

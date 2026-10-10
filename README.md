@@ -4,7 +4,7 @@ Automatic, private snapshots and one-command recovery for Byobu sessions using
 the tmux backend.
 
 `byobu-restore` saves the shape of every session every five minutes. After a
-reboot, run one command to recreate the largest saved session and attach to it.
+reboot, run one command to recreate the saved session named `default` and attach to it.
 Repeated or concurrent invocations reuse the same shared recovery session.
 
 It preserves:
@@ -51,13 +51,13 @@ Ensure `~/.local/bin` is on your `PATH`.
 
 ## Recover a session
 
-Restore the saved session with the most windows and attach to it:
+Restore the saved session named `default` and attach to it:
 
 ```bash
 byobu-restore
 ```
 
-The recovery session defaults to `recovered-work`. Once it exists, subsequent
+The recovery session defaults to `default`. Once it exists, subsequent
 runs attach to it without overwriting anything--even if snapshots have been
 removed.
 
@@ -157,3 +157,21 @@ Tests use isolated temporary directories and tmux servers.
 ## License
 
 MIT
+
+## Named-session restoration (1.1)
+
+Automatic selection matches the snapshot's saved session name to the target.
+It never chooses another session because that session has more windows. A
+missing or ambiguous match fails with a clear error; specify a snapshot name
+explicitly to migrate an older saved session into a new target name.
+
+Existing `shared-session` preferences remain authoritative. To adopt `default`,
+rename your development session and update that preference deliberately. The
+app-owned `codex-bots` session can remain in autosaves without becoming the
+selected development snapshot.
+
+The Ubuntu regularizer source and installed legacy helper were compared during
+this update. Retained standalone improvements include portable helper paths,
+CLI validation, snapshot trust checks and optional process capture. Automatic
+snapshots continue to omit process command lines. No installed scripts or live
+sessions are changed by editing this repository.
