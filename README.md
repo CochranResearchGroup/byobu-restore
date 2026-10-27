@@ -61,11 +61,17 @@ The recovery session defaults to `default`. Once it exists, subsequent
 runs attach to it without overwriting anything--even if snapshots have been
 removed.
 
-To use the last snapshot from the previous boot after newer snapshots exist:
+With no arguments, restore checks `latest`, then `previous-boot` for the same
+saved session name. This recovers your session even when a temporary recovery
+session has already been autosaved after reboot.
+
+To explicitly use the last snapshot from the previous boot:
 
 ```bash
 byobu-restore previous-boot
 ```
+
+Explicit snapshot selections never fall back to another save.
 
 To restore a particular saved session, pass its snapshot name as the second
 argument:

@@ -74,4 +74,22 @@ if BYOBU_RESTORE_SESSION=missing "$repo_root/bin/byobu-restore" >/dev/null 2>&1;
   printf 'missing named snapshot should fail rather than restore bots\n' >&2
   exit 1
 fi
+
+# After reboot, latest may contain only recovery/bot sessions. Preserve the
+# previous boot's matching session and exercise the real helper on our socket.
+ln -s "$(readlink "$BYOBU_SESSION_STATE_DIR/autosave/latest")" \
+  "$BYOBU_SESSION_STATE_DIR/autosave/previous-boot"
+"$real_tmux" -S "$socket" kill-session -t default
+"$repo_root/libexec/byobu-session-autosave" >/dev/null
+if "$repo_root/bin/byobu-restore" latest >"$test_root/explicit.out" 2>&1; then
+  printf 'explicit latest must not fall back to previous-boot\n' >&2
+  exit 1
+fi
+grep -q 'No saved snapshot for session default' "$test_root/explicit.out"
+"$repo_root/bin/byobu-restore" >/dev/null
+[ "$("$real_tmux" -S "$socket" list-windows -t '=default' -F '#W')" = development ]
+if BYOBU_RESTORE_SESSION=missing "$repo_root/bin/byobu-restore" >/dev/null 2>&1; then
+  printf 'fallback must not migrate unrelated previous-boot sessions\n' >&2
+  exit 1
+fi
 printf 'restore test passed\n'

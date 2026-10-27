@@ -27,7 +27,7 @@ export PATH="$test_root/fake-bin:$PATH"
 [ -L "$USER_BIN_DIR/byobu-restore" ]
 [ -f "$SYSTEMD_USER_DIR/byobu-session-autosave.timer" ]
 [ ! -e "$TEST_SYSTEMCTL_LOG" ]
-"$USER_BIN_DIR/byobu-restore" --version | grep -qx 'byobu-restore 1.1.0'
+"$USER_BIN_DIR/byobu-restore" --version | grep -qx 'byobu-restore 1.1.1'
 
 "$repo_root/uninstall.sh" >/dev/null
 [ ! -e "$USER_BIN_DIR/byobu-restore" ]
